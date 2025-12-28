@@ -1,40 +1,265 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/pages/api-reference/create-next-app).
+# 🏥 AI Consultation Summary SaaS
 
-## Getting Started
+An AI-powered healthcare consultation application that helps doctors generate patient visit summaries, next steps, and draft emails automatically using OpenAI's GPT models.
 
-First, run the development server:
+## 📋 Table of Contents
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Tech Stack](#tech-stack)
+- [Features](#features)
+- [Getting Started](#getting-started)
+- [Deployment](#deployment)
+- [Environment Variables](#environment-variables)
+
+## 🎯 Overview
+
+This application allows healthcare professionals to:
+1. Enter patient consultation notes
+2. Generate AI-powered summaries
+3. Get recommended next steps
+4. Create draft emails for patients
+
+The app uses **streaming responses** for real-time AI output and **Clerk authentication** with subscription billing for access control.
+
+## 🏗️ Architecture
+
+### High-Level Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              CLIENT (Browser)                                │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                        Next.js Frontend                              │   │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐  │   │
+│  │  │  Landing     │  │  Product     │  │  Clerk Components        │  │   │
+│  │  │  Page        │  │  Page        │  │  (SignIn, UserButton,    │  │   │
+│  │  │  (index.tsx) │  │  (product.tsx│  │   PricingTable, Protect) │  │   │
+│  │  └──────────────┘  └──────────────┘  └──────────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      │ HTTPS + JWT Token
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              BACKEND (FastAPI)                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                         api/server.py                                │   │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐  │   │
+│  │  │  Clerk Auth  │  │  /api/       │  │  Static File Server     │  │   │
+│  │  │  Middleware  │──│  consultation│  │  (Next.js Export)        │  │   │
+│  │  │  (JWT Valid.)│  │  (POST)      │  │                          │  │   │
+│  │  └──────────────┘  └──────────────┘  └──────────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      │ API Request
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           EXTERNAL SERVICES                                  │
+│  ┌──────────────────────┐  ┌──────────────────────┐                        │
+│  │       OpenAI         │  │        Clerk         │                        │
+│  │   (GPT-4o-mini)      │  │   (Authentication    │                        │
+│  │   - Streaming API    │  │    & Billing)        │                        │
+│  │   - Chat Completions │  │   - JWKS Validation  │                        │
+│  └──────────────────────┘  └──────────────────────┘                        │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Request Flow
 
-You can start editing the page by modifying `pages/index.tsx`. The page auto-updates as you edit the file.
+```
+┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+│  User    │     │  Clerk   │     │ Frontend │     │ FastAPI  │     │  OpenAI  │
+│ (Doctor) │     │  Auth    │     │ (Next.js)│     │ Backend  │     │   API    │
+└────┬─────┘     └────┬─────┘     └────┬─────┘     └────┬─────┘     └────┬─────┘
+     │                │                │                │                │
+     │  1. Sign In    │                │                │                │
+     │───────────────>│                │                │                │
+     │                │                │                │                │
+     │  2. JWT Token  │                │                │                │
+     │<───────────────│                │                │                │
+     │                │                │                │                │
+     │  3. Submit Consultation Notes   │                │                │
+     │────────────────────────────────>│                │                │
+     │                │                │                │                │
+     │                │                │  4. POST /api/consultation      │
+     │                │                │   + JWT Token  │                │
+     │                │                │───────────────>│                │
+     │                │                │                │                │
+     │                │                │  5. Validate JWT via JWKS       │
+     │                │                │                │<───────────────│
+     │                │                │                │                │
+     │                │                │                │  6. Stream     │
+     │                │                │                │     Request    │
+     │                │                │                │───────────────>│
+     │                │                │                │                │
+     │                │                │  7. SSE Stream │  8. GPT Stream │
+     │                │                │<───────────────│<───────────────│
+     │                │                │                │                │
+     │  9. Real-time Summary Display   │                │                │
+     │<────────────────────────────────│                │                │
+     │                │                │                │                │
+```
 
-[API routes](https://nextjs.org/docs/pages/building-your-application/routing/api-routes) can be accessed on [http://localhost:3000/api/hello](http://localhost:3000/api/hello). This endpoint can be edited in `pages/api/hello.ts`.
+### Deployment Architecture (AWS)
 
-The `pages/api` directory is mapped to `/api/*`. Files in this directory are treated as [API routes](https://nextjs.org/docs/pages/building-your-application/routing/api-routes) instead of React pages.
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                   AWS                                        │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                          AWS App Runner                               │  │
+│  │  ┌────────────────────────────────────────────────────────────────┐  │  │
+│  │  │                     Docker Container                            │  │  │
+│  │  │  ┌────────────────────┐  ┌────────────────────────────────┐   │  │  │
+│  │  │  │  FastAPI Server    │  │  Static Files (Next.js)        │   │  │  │
+│  │  │  │  (Port 8000)       │  │  /static/*                      │   │  │  │
+│  │  │  │  - /api/*          │  │  - index.html                   │   │  │  │
+│  │  │  │  - /health         │  │  - product.html                 │   │  │  │
+│  │  │  └────────────────────┘  └────────────────────────────────┘   │  │  │
+│  │  └────────────────────────────────────────────────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│                                      ▲                                       │
+│                                      │                                       │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                              AWS ECR                                  │  │
+│  │                    (Container Image Registry)                         │  │
+│  │                    consultation-app:latest                            │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                              Environment Variables:
+                              - OPENAI_API_KEY
+                              - CLERK_JWKS_URL
+                              - CLERK_SECRET_KEY
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/pages/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Alternative: Vercel Deployment
 
-## Learn More
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                 Vercel                                       │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                         Edge Network (CDN)                            │  │
+│  │                    Static Assets + ISR Pages                          │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│                                      │                                       │
+│  ┌──────────────────────────┐  ┌────────────────────────────────────────┐  │
+│  │   Next.js Frontend       │  │   Python Serverless Functions          │  │
+│  │   (Pages Router)         │  │   api/index.py → /api                  │  │
+│  │   - SSR/SSG Pages        │  │   - FastAPI + OpenAI                   │  │
+│  │   - Clerk Integration    │  │   - Clerk JWT Validation               │  │
+│  └──────────────────────────┘  └────────────────────────────────────────┘  │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
-To learn more about Next.js, take a look at the following resources:
+## 🛠️ Tech Stack
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn-pages-router) - an interactive Next.js tutorial.
+| Layer | Technology |
+|-------|------------|
+| **Frontend** | Next.js 16, React, TypeScript, Tailwind CSS |
+| **Backend** | FastAPI, Python 3.12, Uvicorn |
+| **AI** | OpenAI GPT-4o-mini (streaming) |
+| **Authentication** | Clerk (JWT, JWKS, Billing) |
+| **Containerization** | Docker, Podman |
+| **Deployment** | AWS App Runner, Vercel |
+| **CI/CD** | AWS ECR, GitHub |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## ✨ Features
 
-## Deploy on Vercel
+- 🔐 **Secure Authentication** - Clerk-based JWT authentication
+- 💳 **Subscription Billing** - Clerk PricingTable integration
+- 🤖 **AI-Powered Summaries** - GPT-4o-mini generates structured outputs
+- 📡 **Real-time Streaming** - Server-Sent Events (SSE) for live updates
+- 📱 **Responsive Design** - Tailwind CSS with dark mode support
+- 🐳 **Containerized** - Docker/Podman for consistent deployments
+- ☁️ **Multi-cloud** - Deploy to AWS App Runner or Vercel
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## 🚀 Getting Started
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/pages/building-your-application/deploying) for more details.
+### Prerequisites
+
+- Node.js 22+
+- Python 3.12+
+- Podman or Docker
+- AWS CLI (for AWS deployment)
+
+### Local Development
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/KedarnadhSharma/agenticaisaas.git
+   cd agenticaisaas
+   ```
+
+2. **Install dependencies:**
+   ```bash
+   npm install
+   pip install -r requirements.txt
+   ```
+
+3. **Set up environment variables:**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your actual values
+   ```
+
+4. **Run the frontend:**
+   ```bash
+   npm run dev
+   ```
+
+5. **Run the backend (separate terminal):**
+   ```bash
+   uvicorn api.server:app --reload --port 8000
+   ```
+
+## 📦 Deployment
+
+### Deploy to AWS App Runner
+
+1. **Build the Docker image:**
+   ```bash
+   podman build \
+     --platform linux/amd64 \
+     --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" \
+     -t consultation-app .
+   ```
+
+2. **Push to ECR:**
+   ```bash
+   aws ecr get-login-password --region us-east-1 | \
+     podman login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com
+   
+   podman tag consultation-app:latest $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/consultation-app:latest
+   podman push $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/consultation-app:latest
+   ```
+
+3. **Create App Runner service** with environment variables configured.
+
+### Deploy to Vercel
+
+```bash
+vercel --prod
+```
+
+## 🔐 Environment Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `OPENAI_API_KEY` | OpenAI API key for GPT access | ✅ |
+| `CLERK_JWKS_URL` | Clerk JWKS endpoint for JWT validation | ✅ |
+| `CLERK_SECRET_KEY` | Clerk secret key | ✅ |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk public key (frontend) | ✅ |
+
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) for details.
+
+---
+
+Built with ❤️ using AI-powered development
